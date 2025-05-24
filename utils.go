@@ -34,23 +34,15 @@ Feel free to reach out anytime via @harsh_693.`
 	MessageErrSomethingWentWrong = "⚠️ Oops! Something went wrong on my end. Please try again in a moment. If the issue persists, contact support."
 )
 
-var Commands = []tgx.BotCommand{
-	{
-		Command:     "/start",
-		Description: "Get started with the bot and see the welcome message.",
-	},
-	{
-		Command:     "/connect",
-		Description: "Find a chat partner to start chatting.",
-	},
-	{
-		Command:     "/stop",
-		Description: "End the current chat session.",
-	},
-	{
-		Command:     "/help",
-		Description: "Get a quick guide on how to use the bot.",
-	},
+// Commands defines all the bot commands
+var Commands = []models.BotCommand{
+	{Command: "/start", Description: "Get started with the bot"},
+	{Command: "/connect", Description: "Find someone to chat with"},
+	{Command: "/stop", Description: "End the current chat session"},
+	{Command: "/status", Description: "Check your chat connection status"},
+	{Command: "/help", Description: "Get a quick guide on how to use the bot"},
+	{Command: "/next", Description: "Find a new chat partner (Not Implemented)"},
+	{Command: "/myinterests", Description: "Set/view your anonymous chat interests."},
 }
 
 var inlineKeyboardButton = [][]models.InlineKeyboardButton{

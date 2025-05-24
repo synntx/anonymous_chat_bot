@@ -52,6 +52,21 @@ func (q *Queue) Dequeue() (int64, error) {
 	return dequeuedChatId, nil
 }
 
+// EnqueueAtFront adds a new node to the front (head) of the queue.
+func (q *Queue) EnqueueAtFront(chatId int64) {
+	newNode := &Node{ChatId: chatId}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	if q.Head == nil { // Queue is empty
+		q.Head = newNode
+		q.Tail = newNode
+	} else { // Queue is not empty
+		newNode.Next = q.Head
+		q.Head = newNode
+	}
+}
+
 func (q *Queue) RemoveNode(chatId int64) error {
 
 	if q.Head == nil {
