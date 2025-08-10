@@ -9,15 +9,18 @@ const (
 	MessageQuickGuide = `Quick Guide:
 /connect - Find someone to chat with.
 /stop - End the current chat session.
-/next - Find a new partner (not available yet).
+/next - Skip to the next chat partner.
+/gender - Set your gender and matching preferences.
+/interests - Set your interests to find better matches.
 /status - Check your chat connection status.
+/block - Block the current user and end the chat.
+/report - Report the current user.
 
 Be respectful and stay anonymous! 🤝
 
 Need help or have suggestions?
 Feel free to reach out anytime via @harsh_693.`
 
-	MessageFeatureNotImplemented   = "🚧 The /next feature is not available yet. Instead, you can type /stop to end your current chat and /connect to find a new partner."
 	MessageNotConnected            = "❌ You are not connected to anyone right now. Use /connect to start chatting."
 	MessagePartnerNotAvailable     = "👤 Your partner has left the chat. Use /connect to find a new partner."
 	MessageAlreadyConnected        = "⚠️ You are already connected to someone. If you'd like to end this chat, type /stop."
@@ -32,6 +35,22 @@ Feel free to reach out anytime via @harsh_693.`
 	MessageInWaitingList      = "⌛ You are in the waiting list. I'm searching for a partner for you. Hang tight!"
 
 	MessageErrSomethingWentWrong = "⚠️ Oops! Something went wrong on my end. Please try again in a moment. If the issue persists, contact support."
+
+	MessageNotInChat    = "You are not in a chat. There is no one to block or report."
+	MessageUserBlocked  = "🚫 User has been blocked. You will not be matched with them again. The chat has been ended."
+	MessageReportThanks = "🙏 Thank you for your report. We will review the case. The chat has been ended."
+
+	// User states
+	StateDefault            = ""
+	StateAwaitingGender     = "awaiting_gender"
+	StateAwaitingPreference = "awaiting_preference"
+	StateAwaitingInterests  = "awaiting_interests"
+
+	// Gender options
+	GenderMale   = "male"
+	GenderFemale = "female"
+	GenderOther  = "other"
+	PrefAny      = "any"
 )
 
 var Commands = []tgx.BotCommand{
@@ -48,6 +67,26 @@ var Commands = []tgx.BotCommand{
 		Description: "End the current chat session.",
 	},
 	{
+		Command:     "/next",
+		Description: "Skip to the next chat partner.",
+	},
+	{
+		Command:     "/gender",
+		Description: "Set your gender and matching preferences.",
+	},
+	{
+		Command:     "/interests",
+		Description: "Set your interests to find better matches.",
+	},
+	{
+		Command:     "/block",
+		Description: "Block the current user and find a new one.",
+	},
+	{
+		Command:     "/report",
+		Description: "Report the current user to the administrators.",
+	},
+	{
 		Command:     "/help",
 		Description: "Get a quick guide on how to use the bot.",
 	},
@@ -62,6 +101,26 @@ var inlineKeyboardButton = [][]models.InlineKeyboardButton{
 		{
 			Text:         "Check Status",
 			CallbackData: "status",
+		},
+	},
+}
+
+var genderKeyboard = models.InlineKeyboardMarkup{
+	InlineKeyboard: [][]models.InlineKeyboardButton{
+		{
+			{Text: "Male", CallbackData: "gender_male"},
+			{Text: "Female", CallbackData: "gender_female"},
+			{Text: "Other", CallbackData: "gender_other"},
+		},
+	},
+}
+
+var preferenceKeyboard = models.InlineKeyboardMarkup{
+	InlineKeyboard: [][]models.InlineKeyboardButton{
+		{
+			{Text: "Male", CallbackData: "pref_male"},
+			{Text: "Female", CallbackData: "pref_female"},
+			{Text: "Anyone", CallbackData: "pref_any"},
 		},
 	},
 }

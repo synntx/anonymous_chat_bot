@@ -53,6 +53,8 @@ func (q *Queue) Dequeue() (int64, error) {
 }
 
 func (q *Queue) RemoveNode(chatId int64) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 
 	if q.Head == nil {
 		return fmt.Errorf("queue is empty")
