@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/aws/aws-sdk-go-v2/aws" // <--- THIS LINE HAS BEEN CORRECTED
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -15,7 +15,7 @@ import (
 
 type User struct {
 	ChatId       int64 `dynamodbav:"ChatId"`
-	IsConnecting bool  `dynamodbav:"IsConnecting"`
+	IsConnecting int   `dynamodbav:"IsConnecting"`
 	IsConnected  bool  `dynamodbav:"IsConnected"`
 	Partner      int64 `dynamodbav:"Partner,omitempty"`
 }
@@ -95,9 +95,9 @@ func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*U
 		IndexName:              aws.String("IsConnectingIndex"),
 		KeyConditionExpression: aws.String("IsConnecting = :connecting"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":connecting": &types.AttributeValueMemberBOOL{Value: true},
+			":connecting": &types.AttributeValueMemberN{Value: "1"},
 		},
-		Limit: aws.Int32(20), // Query more than 1 to find a partner that is not myself
+		Limit: aws.Int32(20),
 	}
 
 	result, err := s.Client.Query(ctx, input)
@@ -126,11 +126,11 @@ func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*U
 	}
 
 	me.IsConnected = true
-	me.IsConnecting = false
+	me.IsConnecting = 0
 	me.Partner = partner.ChatId
 
 	partner.IsConnected = true
-	partner.IsConnecting = false
+	partner.IsConnecting = 0
 	partner.Partner = me.ChatId
 
 	mePut, err := s.createPut(me)

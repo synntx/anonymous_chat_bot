@@ -26,7 +26,7 @@ Resources:
       Handler: bootstrap
       Runtime: provided.al2023
       Architectures:
-        - x86_64
+        - arm64
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AnonymousChatUsersTable
@@ -42,16 +42,26 @@ Resources:
           DYNAMODB_TABLE: !Ref AnonymousChatUsersTable
 
   AnonymousChatUsersTable:
-    Type: AWS::Serverless::SimpleTable
+    Type: AWS::DynamoDB::Table
     Properties:
-      PrimaryKey:
-        Name: ChatId
-        Type: Number
-      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: "ChatId"
+          AttributeType: "N"
+        - AttributeName: "IsConnecting"
+          AttributeType: "N"
+      KeySchema:
+        - AttributeName: "ChatId"
+          KeyType: "HASH"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
       GlobalSecondaryIndexes:
         - IndexName: IsConnectingIndex
+          KeySchema:
+            - AttributeName: "IsConnecting"
+              KeyType: "HASH"
           Projection:
-            ProjectionType: ALL
+            ProjectionType: "ALL"
           ProvisionedThroughput:
             ReadCapacityUnits: 5
             WriteCapacityUnits: 5

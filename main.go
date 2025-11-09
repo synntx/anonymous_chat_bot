@@ -93,81 +93,81 @@ func init() {
 	})
 
 	bot.OnMessage("Text", func(ctx *tgx.Context) error {
-		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
+		partnerChatId, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
-		return bot.SendMessage(partnerUser.ChatId, ctx.Text)
+		return bot.SendMessage(partnerChatId, ctx.Text)
 	})
 
 	bot.OnMessage("Animation", func(ctx *tgx.Context) error {
-		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
+		partnerChatId, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
 		req := &tgx.SendAnimationRequest{
 			Animation:        ctx.Animation.FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerChatId},
 		}
 		return bot.SendAnimation(req)
 	})
 
 	bot.OnMessage("Photo", func(ctx *tgx.Context) error {
-		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
+		partnerChatId, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
 		req := &tgx.SendPhotoRequest{
 			Photo:            ctx.Photo[0].FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerChatId},
 		}
 		return bot.SendPhoto(req)
 	})
 
 	bot.OnMessage("Voice", func(ctx *tgx.Context) error {
-		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
+		partnerChatId, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
 		req := &tgx.SendVoiceRequest{
 			Voice:            ctx.Voice.FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerChatId},
 		}
 		return bot.SendVoice(req)
 	})
 
 	bot.OnMessage("Document", func(ctx *tgx.Context) error {
-		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
+		partnerChatId, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
 		req := &tgx.SendDocumentRequest{
 			Document:         ctx.Document.FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerChatId},
 		}
 		return bot.SendDocument(req)
 	})
 
 	bot.OnMessage("Video", func(ctx *tgx.Context) error {
-		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
+		partnerChatId, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
 		req := &tgx.SendVideoRequest{
 			Video:            ctx.Video.FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerChatId},
 		}
 		return bot.SendVideo(req)
 	})
 
 	bot.OnMessage("Sticker", func(ctx *tgx.Context) error {
-		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
+		partnerChatId, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
 		req := &tgx.SendStickerRequest{
 			Sticker:          ctx.Sticker.FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerChatId},
 		}
 		return bot.SendSticker(req)
 	})
@@ -221,7 +221,7 @@ func HandleConnect(b *tgx.Bot, chatId int64) error {
 	}
 
 	log.Printf("LOG: No partner found for %d. Attempting to put user in queue.", chatId)
-	user.IsConnecting = true
+	user.IsConnecting = 1
 	if err := userStore.UpdateUser(ctx, user); err != nil {
 		log.Printf("ERROR: Failed to put user %d into queue: %v", chatId, err)
 		return b.SendMessage(chatId, MessageErrSomethingWentWrong)
@@ -236,7 +236,7 @@ func HandleStop(b *tgx.Bot, chatId int64) error {
 	ctx := context.Background()
 
 	user, err := userStore.GetUser(ctx, chatId)
-	if err != nil || (!user.IsConnected && !user.IsConnecting) {
+	if err != nil || (!user.IsConnected && user.IsConnecting == 0) {
 		log.Printf("LOG: User %d tried to stop but was not in a chat or queue.", chatId)
 		return b.SendMessage(chatId, MessageConnectWithSomeoneFirst)
 	}
@@ -256,7 +256,7 @@ func HandleStop(b *tgx.Bot, chatId int64) error {
 
 	log.Printf("LOG: Resetting status for user %d.", chatId)
 	user.IsConnected = false
-	user.IsConnecting = false
+	user.IsConnecting = 0
 	user.Partner = 0
 	if err := userStore.UpdateUser(ctx, user); err != nil {
 		log.Printf("ERROR: Failed to update user %d on stop: %v", chatId, err)
@@ -281,35 +281,26 @@ func HandleStatus(b *tgx.Bot, chatId int64) error {
 	if user.IsConnected {
 		return b.SendMessage(chatId, MessageCurrentlyChatting)
 	}
-	if user.IsConnecting {
+	if user.IsConnecting == 1 {
 		return b.SendMessage(chatId, MessageInWaitingList)
 	}
 	return b.SendMessage(chatId, MessageNotConnectedStatus)
 }
 
-func CheckAndGetPartner(chatId int64) (*store.User, string) {
+func CheckAndGetPartner(chatId int64) (int64, string) {
 	log.Printf("LOG: Checking for partner for ChatID %d", chatId)
 
 	user, err := userStore.GetUser(context.Background(), chatId)
 	if err != nil {
 		log.Printf("WARN: User %d not found in DB for partner check.", chatId)
-		return nil, MessageNotConnected
+		return 0, MessageNotConnected
 	}
 	if !user.IsConnected || user.Partner == 0 {
 		log.Printf("LOG: User %d is not currently connected to a partner.", chatId)
-		return nil, MessageNotConnected
+		return 0, MessageNotConnected
 	}
 
-	partnerUser, err := userStore.GetUser(context.Background(), user.Partner)
-	if err != nil {
-		log.Printf("ERROR: Could not find partner %d in DB for user %d. State may be inconsistent.", user.Partner, chatId)
-		user.IsConnected = false
-		user.Partner = 0
-		userStore.UpdateUser(context.Background(), user)
-		return nil, MessagePartnerNotAvailable
-	}
-
-	log.Printf("LOG: Found partner %d for user %d.", partnerUser.ChatId, chatId)
-	return partnerUser, ""
+	log.Printf("LOG: Found partner %d for user %d.", user.Partner, chatId)
+	return user.Partner, ""
 }
 
