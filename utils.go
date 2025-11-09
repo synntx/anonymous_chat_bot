@@ -11,6 +11,9 @@ const (
 /stop - End the current chat session.
 /next - Find a new partner (not available yet).
 /status - Check your chat connection status.
+/report - Report your current chat partner.
+/mygender - Set your gender (e.g., /mygender female).
+/partnergender - Set your preferred partner gender (e.g., /partnergender male).
 
 Be respectful and stay anonymous! 🤝
 
@@ -32,6 +35,15 @@ Feel free to reach out anytime via @harsh_693.`
 	MessageInWaitingList      = "⌛ You are in the waiting list. I'm searching for a partner for you. Hang tight!"
 
 	MessageErrSomethingWentWrong = "⚠️ Oops! Something went wrong on my end. Please try again in a moment. If the issue persists, contact support."
+
+	MessageReportConfirmation   = "Thank you for your report. The user has been reported, and your chat has been disconnected."
+	MessageNotInChat            = "You can't perform this action because you are not in a chat. Use /connect to find a partner."
+	MessagePartnerReportWarning = "⚠️ Be advised: This user has been reported multiple times for their behavior. Please be cautious."
+
+	MessageGenderSet            = "Your gender has been set to: %s."
+	MessagePartnerGenderSet     = "Your preferred partner gender has been set to: %s."
+	MessageInvalidGender        = "Invalid gender. Please use one of: male, female, other."
+	MessageInvalidPartnerGender = "Invalid preference. Please use one of: male, female, any."
 )
 
 var Commands = []tgx.BotCommand{
@@ -46,6 +58,18 @@ var Commands = []tgx.BotCommand{
 	{
 		Command:     "/stop",
 		Description: "End the current chat session.",
+	},
+	{
+		Command:     "/report",
+		Description: "Report your chat partner for inappropriate behavior.",
+	},
+	{
+		Command:     "/mygender",
+		Description: "Set your gender (e.g., /mygender female).",
+	},
+	{
+		Command:     "/partnergender",
+		Description: "Set your preferred partner gender (e.g., /partnergender male).",
 	},
 	{
 		Command:     "/help",

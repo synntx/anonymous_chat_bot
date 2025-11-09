@@ -14,10 +14,13 @@ import (
 )
 
 type User struct {
-	ChatId       int64 `dynamodbav:"ChatId"`
-	IsConnecting int   `dynamodbav:"IsConnecting"`
-	IsConnected  bool  `dynamodbav:"IsConnected"`
-	Partner      int64 `dynamodbav:"Partner,omitempty"`
+	ChatId        int64  `dynamodbav:"ChatId"`
+	IsConnecting  int    `dynamodbav:"IsConnecting"`
+	IsConnected   bool   `dynamodbav:"IsConnected"`
+	Partner       int64  `dynamodbav:"Partner,omitempty"`
+	ReportCount   int    `dynamodbav:"ReportCount"`
+	Gender        string `dynamodbav:"Gender,omitempty"`
+	PartnerGender string `dynamodbav:"PartnerGender,omitempty"`
 }
 
 type DynamoDBStore struct {
@@ -89,7 +92,7 @@ func (s *DynamoDBStore) UpdateUser(ctx context.Context, user *User) error {
 	return nil
 }
 
-func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*User, error) {
+func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*User, *User, error) {
 	input := &dynamodb.QueryInput{
 		TableName:              aws.String(s.TableName),
 		IndexName:              aws.String("IsConnectingIndex"),
@@ -97,32 +100,44 @@ func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*U
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":connecting": &types.AttributeValueMemberN{Value: "1"},
 		},
-		Limit: aws.Int32(20),
+		Limit: aws.Int32(100), // Increased limit to get a larger pool for filtering
 	}
 
 	result, err := s.Client.Query(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query for partners: %w", err)
+		return nil, nil, fmt.Errorf("failed to query for partners: %w", err)
 	}
 
 	if len(result.Items) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	var partner *User
 	for _, item := range result.Items {
 		var p User
 		if err := attributevalue.UnmarshalMap(item, &p); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal partner item: %w", err)
+			// Log this error bu continue, one bad record shouldn't stop matching
+			fmt.Printf("WARN: failed to unmarshal potential partner item: %v\n", err)
+			continue
 		}
-		if p.ChatId != me.ChatId {
+
+		if p.ChatId == me.ChatId {
+			continue
+		}
+
+		// My preference matches their gender
+		mePrefersPartner := me.PartnerGender == "" || me.PartnerGender == "any" || me.PartnerGender == p.Gender
+		// Their preference matches my gender
+		partnerPrefersMe := p.PartnerGender == "" || p.PartnerGender == "any" || p.PartnerGender == me.Gender
+
+		if mePrefersPartner && partnerPrefersMe {
 			partner = &p
-			break
+			break // Found a match
 		}
 	}
 
 	if partner == nil {
-		return nil, nil
+		return nil, nil, nil // No suitable partner found in the current pool
 	}
 
 	me.IsConnected = true
@@ -135,11 +150,11 @@ func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*U
 
 	mePut, err := s.createPut(me)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	partnerPut, err := s.createPut(partner)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	txInput := &dynamodb.TransactWriteItemsInput{
@@ -151,10 +166,10 @@ func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*U
 
 	_, err = s.Client.TransactWriteItems(ctx, txInput)
 	if err != nil {
-		return nil, fmt.Errorf("failed to execute connect transaction: %w", err)
+		return nil, nil, fmt.Errorf("failed to execute connect transaction: %w", err)
 	}
 
-	return partner, nil
+	return me, partner, nil
 }
 
 func (s *DynamoDBStore) createPut(user *User) (*types.Put, error) {

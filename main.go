@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -127,6 +128,18 @@ func init() {
 		return HandleStatus(bot, ctx.ChatID)
 	})
 
+	bot.OnCommand("report", func(ctx *tgx.Context) error {
+		return HandleReport(bot, ctx.ChatID)
+	})
+
+	bot.OnCommand("mygender", func(ctx *tgx.Context) error {
+		return HandleMyGender(ctx)
+	})
+
+	bot.OnCommand("partnergender", func(ctx *tgx.Context) error {
+		return HandlePartnerGender(ctx)
+	})
+
 	bot.OnCallback("connect", func(ctx *tgx.CallbackContext) error {
 		err := HandleConnect(bot, ctx.GetChatID())
 		if err != nil {
@@ -246,6 +259,7 @@ func main() {
 func HandleConnect(b *tgx.Bot, chatId int64) error {
 	log.Printf("LOG: HandleConnect called for ChatID: %d", chatId)
 	ctx := context.Background()
+	const REPORT_THRESHOLD = 3
 
 	user, err := GetUser(ctx, chatId)
 	if err != nil {
@@ -258,7 +272,7 @@ func HandleConnect(b *tgx.Bot, chatId int64) error {
 		return b.SendMessage(chatId, MessageAlreadyConnected)
 	}
 
-	partner, err := userStore.FindAndConnectPartner(ctx, user)
+	updatedUser, partner, err := userStore.FindAndConnectPartner(ctx, user)
 	if err != nil {
 		log.Printf("ERROR: FindAndConnectPartner failed for %d: %v", chatId, err)
 		return b.SendMessage(chatId, MessageErrSomethingWentWrong)
@@ -266,12 +280,21 @@ func HandleConnect(b *tgx.Bot, chatId int64) error {
 
 	if partner != nil {
 		log.Printf("LOG: Match found! %d is now connected with %d.", user.ChatId, partner.ChatId)
-		// Invalidate cache for both users since FindAndConnectPartner changed them in the DB.
-		removeUserFromCache(user.ChatId)
-		removeUserFromCache(partner.ChatId)
+		// Update cache with the fresh objects returned from the transaction
+		setUserInCache(updatedUser)
+		setUserInCache(partner)
 
 		b.SendMessage(user.ChatId, MessageConnected)
 		b.SendMessage(partner.ChatId, MessageConnected)
+
+		// Check report counts and send warnings if necessary
+		if partner.ReportCount >= REPORT_THRESHOLD {
+			b.SendMessage(user.ChatId, MessagePartnerReportWarning)
+		}
+		if updatedUser.ReportCount >= REPORT_THRESHOLD {
+			b.SendMessage(partner.ChatId, MessagePartnerReportWarning)
+		}
+
 		return nil // Success!
 	}
 
@@ -357,4 +380,80 @@ func CheckAndGetPartner(chatId int64) (int64, string) {
 
 	log.Printf("LOG: Found partner %d for user %d.", user.Partner, chatId)
 	return user.Partner, ""
+}
+
+func HandleReport(b *tgx.Bot, chatId int64) error {
+	log.Printf("LOG: HandleReport called for ChatID: %d", chatId)
+	ctx := context.Background()
+
+	user, err := GetUser(ctx, chatId)
+	if err != nil || !user.IsConnected || user.Partner == 0 {
+		log.Printf("LOG: User %d tried to report but was not in a chat.", chatId)
+		return b.SendMessage(chatId, MessageNotInChat)
+	}
+
+	partner, err := GetUser(ctx, user.Partner)
+	if err != nil {
+		log.Printf("ERROR: Could not find partner %d to report for user %d.", user.Partner, chatId)
+		return b.SendMessage(chatId, MessageErrSomethingWentWrong)
+	}
+
+	partner.ReportCount++
+	if err := UpdateUser(ctx, partner); err != nil {
+		log.Printf("ERROR: Failed to update partner %d report count: %v", partner.ChatId, err)
+		return b.SendMessage(chatId, MessageErrSomethingWentWrong)
+	}
+
+	log.Printf("LOG: User %d reported partner %d. New report count: %d", chatId, partner.ChatId, partner.ReportCount)
+
+	// Disconnect the users
+	HandleStop(b, chatId)
+
+	return b.SendMessage(chatId, MessageReportConfirmation)
+}
+
+func HandleMyGender(ctx *tgx.Context) error {
+	args := ctx.Args
+	if len(args) == 0 {
+		return ctx.Reply("Please provide your gender. Usage: /mygender [male/female/other]")
+	}
+	gender := strings.ToLower(args[0])
+	if gender != "male" && gender != "female" && gender != "other" {
+		return ctx.Reply(MessageInvalidGender)
+	}
+
+	user, err := GetUser(context.Background(), ctx.ChatID)
+	if err != nil {
+		user = &store.User{ChatId: ctx.ChatID}
+	}
+
+	user.Gender = gender
+	if err := UpdateUser(context.Background(), user); err != nil {
+		return ctx.Reply(MessageErrSomethingWentWrong)
+	}
+
+	return ctx.Reply(fmt.Sprintf(MessageGenderSet, gender))
+}
+
+func HandlePartnerGender(ctx *tgx.Context) error {
+	args := ctx.Args
+	if len(args) == 0 {
+		return ctx.Reply("Please provide your preferred partner gender. Usage: /partnergender [male/female/any]")
+	}
+	gender := strings.ToLower(args[0])
+	if gender != "male" && gender != "female" && gender != "any" {
+		return ctx.Reply(MessageInvalidPartnerGender)
+	}
+
+	user, err := GetUser(context.Background(), ctx.ChatID)
+	if err != nil {
+		user = &store.User{ChatId: ctx.ChatID}
+	}
+
+	user.PartnerGender = gender
+	if err := UpdateUser(context.Background(), user); err != nil {
+		return ctx.Reply(MessageErrSomethingWentWrong)
+	}
+
+	return ctx.Reply(fmt.Sprintf(MessagePartnerGenderSet, gender))
 }
