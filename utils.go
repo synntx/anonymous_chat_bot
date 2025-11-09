@@ -51,10 +51,6 @@ var Commands = []tgx.BotCommand{
 		Command:     "/help",
 		Description: "Get a quick guide on how to use the bot.",
 	},
-	{
-		Command:     "/interests",
-		Description: "Sets intrests",
-	},
 }
 
 var inlineKeyboardButton = [][]models.InlineKeyboardButton{

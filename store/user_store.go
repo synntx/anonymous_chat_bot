@@ -90,28 +90,39 @@ func (s *DynamoDBStore) UpdateUser(ctx context.Context, user *User) error {
 }
 
 func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*User, error) {
-	input := &dynamodb.ScanInput{
-		TableName:        aws.String(s.TableName),
-		FilterExpression: aws.String("IsConnecting = :connecting AND ChatId <> :myChatId"),
+	input := &dynamodb.QueryInput{
+		TableName:              aws.String(s.TableName),
+		IndexName:              aws.String("IsConnectingIndex"),
+		KeyConditionExpression: aws.String("IsConnecting = :connecting"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":connecting": &types.AttributeValueMemberBOOL{Value: true},
-			":myChatId":   &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", me.ChatId)},
 		},
-		Limit: aws.Int32(1),
+		Limit: aws.Int32(20), // Query more than 1 to find a partner that is not myself
 	}
 
-	result, err := s.Client.Scan(ctx, input)
+	result, err := s.Client.Query(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to scan for partners: %w", err)
+		return nil, fmt.Errorf("failed to query for partners: %w", err)
 	}
 
 	if len(result.Items) == 0 {
 		return nil, nil
 	}
 
-	var partner User
-	if err := attributevalue.UnmarshalMap(result.Items[0], &partner); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal partner item: %w", err)
+	var partner *User
+	for _, item := range result.Items {
+		var p User
+		if err := attributevalue.UnmarshalMap(item, &p); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal partner item: %w", err)
+		}
+		if p.ChatId != me.ChatId {
+			partner = &p
+			break
+		}
+	}
+
+	if partner == nil {
+		return nil, nil
 	}
 
 	me.IsConnected = true
@@ -126,7 +137,7 @@ func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*U
 	if err != nil {
 		return nil, err
 	}
-	partnerPut, err := s.createPut(&partner)
+	partnerPut, err := s.createPut(partner)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +154,7 @@ func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*U
 		return nil, fmt.Errorf("failed to execute connect transaction: %w", err)
 	}
 
-	return &partner, nil
+	return partner, nil
 }
 
 func (s *DynamoDBStore) createPut(user *User) (*types.Put, error) {

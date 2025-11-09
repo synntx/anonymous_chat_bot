@@ -76,10 +76,6 @@ func init() {
 		return HandleStatus(bot, ctx.ChatID)
 	})
 
-	bot.OnCommand("interests", func(ctx *tgx.Context) error {
-		return HandleInterests(bot, ctx.ChatID)
-	})
-
 	bot.OnCallback("connect", func(ctx *tgx.CallbackContext) error {
 		err := HandleConnect(bot, ctx.GetChatID())
 		if err != nil {
@@ -94,13 +90,6 @@ func init() {
 			log.Printf("ERROR: HandleStatus from callback failed: %v", err)
 		}
 		return ctx.AnswerCallback(&tgx.CallbackAnswerOptions{})
-	})
-
-	bot.OnCallback("interest_adult", func(ctx *tgx.CallbackContext) error {
-		return ctx.AnswerCallback(&tgx.CallbackAnswerOptions{
-			Text:      "This feature is coming soon!",
-			ShowAlert: true,
-		})
 	})
 
 	bot.OnMessage("Text", func(ctx *tgx.Context) error {
@@ -324,32 +313,3 @@ func CheckAndGetPartner(chatId int64) (*store.User, string) {
 	return partnerUser, ""
 }
 
-func HandleInterests(b *tgx.Bot, chatId int64) error {
-	var interests_button = [][]models.InlineKeyboardButton{
-		{
-			{Text: "Music", CallbackData: "interest_music"},
-			{Text: "Movies", CallbackData: "interest_movies"},
-			{Text: "Sports", CallbackData: "interest_sports"},
-		},
-		{
-			{Text: "Gaming", CallbackData: "interest_gaming"},
-			{Text: "Books", CallbackData: "interest_books"},
-			{Text: "Travel", CallbackData: "interest_travel"},
-		},
-		{
-			{Text: "Food", CallbackData: "interest_food"},
-			{Text: "Art", CallbackData: "interest_art"},
-			{Text: "Technology", CallbackData: "interest_tech"},
-		},
-		{
-			{Text: "Animals", CallbackData: "interest_animals"},
-			{Text: "Adult", CallbackData: "interest_adult"},
-		},
-	}
-	req := &tgx.SendMessageRequest{
-		ChatId:      chatId,
-		Text:        "Set Interests",
-		ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: interests_button},
-	}
-	return b.SendMessageWithOpts(req)
-}
