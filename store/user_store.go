@@ -93,17 +93,35 @@ func (s *DynamoDBStore) UpdateUser(ctx context.Context, user *User) error {
 }
 
 func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*User, *User, error) {
-	input := &dynamodb.QueryInput{
-		TableName:              aws.String(s.TableName),
-		IndexName:              aws.String("IsConnectingIndex"),
-		KeyConditionExpression: aws.String("IsConnecting = :connecting"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":connecting": &types.AttributeValueMemberN{Value: "1"},
-		},
-		Limit: aws.Int32(100), // Increased limit to get a larger pool for filtering
+	var queryInput *dynamodb.QueryInput
+
+	// Determine which index to query based on user's preference
+	if me.PartnerGender == "male" || me.PartnerGender == "female" || me.PartnerGender == "other" {
+		// Query IsConnecting_GenderIndex for specific gender preference
+		queryInput = &dynamodb.QueryInput{
+			TableName:              aws.String(s.TableName),
+			IndexName:              aws.String("IsConnecting_GenderIndex"),
+			KeyConditionExpression: aws.String("IsConnecting = :connecting AND Gender = :gender"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":connecting": &types.AttributeValueMemberN{Value: "1"},
+				":gender":     &types.AttributeValueMemberS{Value: me.PartnerGender},
+			},
+			Limit: aws.Int32(100),
+		}
+	} else {
+		// Fallback to IsConnectingIndex for "any" or no preference
+		queryInput = &dynamodb.QueryInput{
+			TableName:              aws.String(s.TableName),
+			IndexName:              aws.String("IsConnectingIndex"),
+			KeyConditionExpression: aws.String("IsConnecting = :connecting"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":connecting": &types.AttributeValueMemberN{Value: "1"},
+			},
+			Limit: aws.Int32(100),
+		}
 	}
 
-	result, err := s.Client.Query(ctx, input)
+	result, err := s.Client.Query(ctx, queryInput)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to query for partners: %w", err)
 	}
@@ -116,7 +134,7 @@ func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*U
 	for _, item := range result.Items {
 		var p User
 		if err := attributevalue.UnmarshalMap(item, &p); err != nil {
-			// Log this error bu continue, one bad record shouldn't stop matching
+			// Log this error but continue, one bad record shouldn't stop matching
 			fmt.Printf("WARN: failed to unmarshal potential partner item: %v\n", err)
 			continue
 		}
@@ -137,7 +155,7 @@ func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*U
 	}
 
 	if partner == nil {
-		return nil, nil, nil // No suitable partner found in the current pool
+		return nil, nil, nil
 	}
 
 	me.IsConnected = true
