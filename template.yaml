@@ -3,31 +3,55 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   Anonymous Chat Telegram Bot
 
+Parameters:
+  BotToken:
+    Type: String
+    Description: The secret token for the Telegram bot.
+    NoEcho: true
+
+Globals:
+  Function:
+    Timeout: 10
+  Api:
+    Auth:
+      DefaultAuthorizer: NONE
+      Authorizers: null
+
 Resources:
   AnonymousChatFunction:
     Type: AWS::Serverless::Function
     Properties:
       PackageType: Zip
       CodeUri: .
-      Handler: main
-      Runtime: go1.x
-      Timeout: 10
+      Handler: bootstrap
+      Runtime: provided.al2023
       Architectures:
         - x86_64
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AnonymousChatUsersTable
       Events:
         Webhook:
           Type: Api
           Properties:
             Path: /
             Method: post
-            Auth:
-              Authorizer: NONE # Explicitly disable the authorizer
       Environment:
         Variables:
-          BOT_TOKEN: YOUR_BOT_TOKEN
-          DYNAMODB_TABLE: AnonymousChatUsers
+          BOT_TOKEN: !Ref BotToken
+          DYNAMODB_TABLE: !Ref AnonymousChatUsersTable
+
+  AnonymousChatUsersTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: ChatId
+        Type: Number
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
 
 Outputs:
   WebhookApi:
-    Description: "API Gateway endpoint URL for Prod stage"
+    Description: "API Gateway endpoint URL for the bot"
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
