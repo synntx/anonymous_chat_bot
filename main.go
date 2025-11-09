@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -20,7 +21,57 @@ import (
 var (
 	bot       *tgx.Bot
 	userStore *store.DynamoDBStore
+	userCache = make(map[int64]*store.User)
+	cacheLock = &sync.RWMutex{}
 )
+
+func getUserFromCache(chatId int64) (*store.User, bool) {
+	cacheLock.RLock()
+	defer cacheLock.RUnlock()
+	user, found := userCache[chatId]
+	if found {
+		userCopy := *user
+		return &userCopy, true
+	}
+	return nil, false
+}
+
+func setUserInCache(user *store.User) {
+	cacheLock.Lock()
+	defer cacheLock.Unlock()
+	userCache[user.ChatId] = user
+}
+
+func removeUserFromCache(chatId int64) {
+	cacheLock.Lock()
+	defer cacheLock.Unlock()
+	delete(userCache, chatId)
+}
+
+// GetUser retrieves a user, using the cache first.
+func GetUser(ctx context.Context, chatId int64) (*store.User, error) {
+	if user, found := getUserFromCache(chatId); found {
+		log.Printf("CACHE HIT: Found user %d in cache", chatId)
+		return user, nil
+	}
+	log.Printf("CACHE MISS: User %d not in cache, fetching from DB", chatId)
+	user, err := userStore.GetUser(ctx, chatId)
+	if err != nil {
+		return nil, err
+	}
+	setUserInCache(user)
+	return user, nil
+}
+
+// UpdateUser updates a user in the DB and cache.
+func UpdateUser(ctx context.Context, user *store.User) error {
+	err := userStore.UpdateUser(ctx, user)
+	if err != nil {
+		return err
+	}
+	setUserInCache(user)
+	return nil
+}
 
 func init() {
 	token := os.Getenv("BOT_TOKEN")
@@ -175,17 +226,17 @@ func init() {
 	log.Println("--- BOT INITIALIZED SUCCESSFULLY ---")
 }
 
-func HandleRequest(ctx context.Context, req events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+func HandleRequest(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	log.Printf("Handler invoked! Request Body: %s", req.Body)
 	httpRequest, err := http.NewRequest("POST", "/", strings.NewReader(req.Body))
 	if err != nil {
 		log.Printf("ERROR: Could not create new HTTP request: %v", err)
-		return events.APIGatewayProxyResponse{StatusCode: 500}, err
+		return events.APIGatewayV2HTTPResponse{StatusCode: 500}, err
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	responseRecorder := httptest.NewRecorder()
 	bot.HandleWebhook(responseRecorder, httpRequest)
-	return events.APIGatewayProxyResponse{StatusCode: responseRecorder.Code, Body: responseRecorder.Body.String()}, nil
+	return events.APIGatewayV2HTTPResponse{StatusCode: responseRecorder.Code, Body: responseRecorder.Body.String()}, nil
 }
 
 func main() {
@@ -196,7 +247,7 @@ func HandleConnect(b *tgx.Bot, chatId int64) error {
 	log.Printf("LOG: HandleConnect called for ChatID: %d", chatId)
 	ctx := context.Background()
 
-	user, err := userStore.GetUser(ctx, chatId)
+	user, err := GetUser(ctx, chatId)
 	if err != nil {
 		log.Printf("LOG: User %d not found in DB, creating new user object.", chatId)
 		user = &store.User{ChatId: chatId}
@@ -215,6 +266,10 @@ func HandleConnect(b *tgx.Bot, chatId int64) error {
 
 	if partner != nil {
 		log.Printf("LOG: Match found! %d is now connected with %d.", user.ChatId, partner.ChatId)
+		// Invalidate cache for both users since FindAndConnectPartner changed them in the DB.
+		removeUserFromCache(user.ChatId)
+		removeUserFromCache(partner.ChatId)
+
 		b.SendMessage(user.ChatId, MessageConnected)
 		b.SendMessage(partner.ChatId, MessageConnected)
 		return nil // Success!
@@ -222,7 +277,7 @@ func HandleConnect(b *tgx.Bot, chatId int64) error {
 
 	log.Printf("LOG: No partner found for %d. Attempting to put user in queue.", chatId)
 	user.IsConnecting = 1
-	if err := userStore.UpdateUser(ctx, user); err != nil {
+	if err := UpdateUser(ctx, user); err != nil {
 		log.Printf("ERROR: Failed to put user %d into queue: %v", chatId, err)
 		return b.SendMessage(chatId, MessageErrSomethingWentWrong)
 	}
@@ -235,7 +290,7 @@ func HandleStop(b *tgx.Bot, chatId int64) error {
 	log.Printf("LOG: HandleStop called for ChatID: %d", chatId)
 	ctx := context.Background()
 
-	user, err := userStore.GetUser(ctx, chatId)
+	user, err := GetUser(ctx, chatId)
 	if err != nil || (!user.IsConnected && user.IsConnecting == 0) {
 		log.Printf("LOG: User %d tried to stop but was not in a chat or queue.", chatId)
 		return b.SendMessage(chatId, MessageConnectWithSomeoneFirst)
@@ -243,11 +298,11 @@ func HandleStop(b *tgx.Bot, chatId int64) error {
 
 	if user.IsConnected {
 		log.Printf("LOG: User %d is disconnecting from partner %d.", chatId, user.Partner)
-		partner, err := userStore.GetUser(ctx, user.Partner)
+		partner, err := GetUser(ctx, user.Partner)
 		if err == nil {
 			partner.IsConnected = false
 			partner.Partner = 0
-			userStore.UpdateUser(ctx, partner)
+			UpdateUser(ctx, partner)
 			b.SendMessage(partner.ChatId, MessagePartnerLeftChat)
 		} else {
 			log.Printf("WARN: Could not find partner %d to notify about disconnection for user %d.", user.Partner, chatId)
@@ -258,7 +313,7 @@ func HandleStop(b *tgx.Bot, chatId int64) error {
 	user.IsConnected = false
 	user.IsConnecting = 0
 	user.Partner = 0
-	if err := userStore.UpdateUser(ctx, user); err != nil {
+	if err := UpdateUser(ctx, user); err != nil {
 		log.Printf("ERROR: Failed to update user %d on stop: %v", chatId, err)
 		return b.SendMessage(chatId, MessageErrSomethingWentWrong)
 	}
@@ -274,7 +329,7 @@ func HandleNext(b *tgx.Bot, chatId int64) error {
 
 func HandleStatus(b *tgx.Bot, chatId int64) error {
 	log.Printf("LOG: HandleStatus called for ChatID: %d", chatId)
-	user, err := userStore.GetUser(context.Background(), chatId)
+	user, err := GetUser(context.Background(), chatId)
 	if err != nil {
 		return b.SendMessage(chatId, MessageNotConnectedStatus)
 	}
@@ -290,7 +345,7 @@ func HandleStatus(b *tgx.Bot, chatId int64) error {
 func CheckAndGetPartner(chatId int64) (int64, string) {
 	log.Printf("LOG: Checking for partner for ChatID %d", chatId)
 
-	user, err := userStore.GetUser(context.Background(), chatId)
+	user, err := GetUser(context.Background(), chatId)
 	if err != nil {
 		log.Printf("WARN: User %d not found in DB for partner check.", chatId)
 		return 0, MessageNotConnected
@@ -303,4 +358,3 @@ func CheckAndGetPartner(chatId int64) (int64, string) {
 	log.Printf("LOG: Found partner %d for user %d.", user.Partner, chatId)
 	return user.Partner, ""
 }
-

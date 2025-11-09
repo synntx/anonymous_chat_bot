@@ -32,10 +32,10 @@ Resources:
             TableName: !Ref AnonymousChatUsersTable
       Events:
         Webhook:
-          Type: Api
+          Type: HttpApi
           Properties:
             Path: /
-            Method: post
+            Method: POST
       Environment:
         Variables:
           BOT_TOKEN: !Ref BotToken
@@ -69,4 +69,4 @@ Resources:
 Outputs:
   WebhookApi:
     Description: "API Gateway endpoint URL for the bot"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
