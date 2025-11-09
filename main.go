@@ -1,52 +1,58 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 
-	"github.com/harshyadavone/anonymous_chat/queue"
+	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
+
 	"github.com/harshyadavone/anonymous_chat/store"
-
 	"github.com/harshyadavone/tgx"
 	"github.com/harshyadavone/tgx/models"
 	"github.com/harshyadavone/tgx/pkg/logger"
 )
 
-var userStore = &store.UserStore{
-	Users: make(map[int64]*store.User),
-}
+var (
+	bot       *tgx.Bot
+	userStore *store.DynamoDBStore
+)
 
-var waitingQueue = queue.NewQueue()
-
-func main() {
+func init() {
 	token := os.Getenv("BOT_TOKEN")
-	webhookURL := os.Getenv("WEBHOOK_URL")
+	tableName := os.Getenv("DYNAMODB_TABLE")
+	if token == "" || tableName == "" {
+		log.Fatal("FATAL: BOT_TOKEN and DYNAMODB_TABLE environment variables must be set")
+	}
 
-	logger := logger.NewDefaultLogger(logger.DEBUG)
+	logger := logger.NewDefaultLogger(logger.INFO)
 
-	bot := tgx.NewBot(token, webhookURL, logger)
+	var err error
+	userStore, err = store.New(context.Background(), tableName)
+	if err != nil {
+		log.Fatalf("FATAL: failed to initialize DynamoDB store: %v", err)
+	}
 
-	logger.Info("Starting the bot...")
+	bot = tgx.NewBot(token, "", logger)
 
 	bot.OnError(func(ctx *tgx.Context, err error) {
-		payload := &tgx.SendMessageRequest{
-			ChatId: ctx.ChatID,
-			Text:   MessageErrSomethingWentWrong,
-		}
-		ctx.ReplyWithOpts(payload)
+		log.Printf("ERROR: An error occurred in an update: %v", err)
+		ctx.Reply(MessageErrSomethingWentWrong)
 	})
 
+	bot.SetMyCommands(Commands)
+
 	bot.OnCommand("start", func(ctx *tgx.Context) error {
-
+		log.Println("LOG: Handling /start command")
 		req := &tgx.SendMessageRequest{
-			ChatId: ctx.ChatID,
-			Text:   "👋 Welcome! Chat anonymously with random people here. Type /connect to start or /help for commands!",
-			ReplyMarkup: models.InlineKeyboardMarkup{
-				InlineKeyboard: inlineKeyboardButton,
-			},
+			ChatId:      ctx.ChatID,
+			Text:        "👋 Welcome! Chat anonymously with random people here. Type /connect to start or /help for commands!",
+			ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: inlineKeyboardButton},
 		}
-
 		return bot.SendMessageWithOpts(req)
 	})
 
@@ -58,258 +64,292 @@ func main() {
 		return HandleConnect(bot, ctx.ChatID)
 	})
 
-	bot.OnCommand("status", func(ctx *tgx.Context) error {
-		return HandleStatus(bot, ctx.ChatID)
-	})
-
-	bot.OnCommand("next", func(ctx *tgx.Context) error {
-		return ctx.Reply(MessageFeatureNotImplemented)
-	})
-
 	bot.OnCommand("stop", func(ctx *tgx.Context) error {
 		return HandleStop(bot, ctx.ChatID)
 	})
 
-	bot.SetMyCommands(Commands)
+	bot.OnCommand("next", func(ctx *tgx.Context) error {
+		return HandleNext(bot, ctx.ChatID)
+	})
+
+	bot.OnCommand("status", func(ctx *tgx.Context) error {
+		return HandleStatus(bot, ctx.ChatID)
+	})
+
+	bot.OnCommand("interests", func(ctx *tgx.Context) error {
+		return HandleInterests(bot, ctx.ChatID)
+	})
 
 	bot.OnCallback("connect", func(ctx *tgx.CallbackContext) error {
-		if err := HandleConnect(bot, ctx.GetChatID()); err != nil {
-			return err
+		err := HandleConnect(bot, ctx.GetChatID())
+		if err != nil {
+			log.Printf("ERROR: HandleConnect from callback failed: %v", err)
 		}
 		return ctx.AnswerCallback(&tgx.CallbackAnswerOptions{})
 	})
 
 	bot.OnCallback("status", func(ctx *tgx.CallbackContext) error {
-		if err := HandleStatus(bot, ctx.GetChatID()); err != nil {
-			return err
+		err := HandleStatus(bot, ctx.GetChatID())
+		if err != nil {
+			log.Printf("ERROR: HandleStatus from callback failed: %v", err)
 		}
 		return ctx.AnswerCallback(&tgx.CallbackAnswerOptions{})
 	})
 
-	bot.OnMessage("Text", func(ctx *tgx.Context) error {
+	bot.OnCallback("interest_adult", func(ctx *tgx.CallbackContext) error {
+		return ctx.AnswerCallback(&tgx.CallbackAnswerOptions{
+			Text:      "This feature is coming soon!",
+			ShowAlert: true,
+		})
+	})
 
-		partner, errMsg := CheckAndGetPartner(ctx.ChatID, userStore)
+	bot.OnMessage("Text", func(ctx *tgx.Context) error {
+		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
-
-		return bot.SendMessage(partner.ChatId, ctx.Text)
+		return bot.SendMessage(partnerUser.ChatId, ctx.Text)
 	})
 
 	bot.OnMessage("Animation", func(ctx *tgx.Context) error {
-
-		partner, errMsg := CheckAndGetPartner(ctx.ChatID, userStore)
+		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
-
 		req := &tgx.SendAnimationRequest{
-			Animation: ctx.Animation.FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{
-				ChatId: partner.ChatId,
-			},
+			Animation:        ctx.Animation.FileId,
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
 		}
 		return bot.SendAnimation(req)
 	})
 
 	bot.OnMessage("Photo", func(ctx *tgx.Context) error {
-
-		partner, errMsg := CheckAndGetPartner(ctx.ChatID, userStore)
+		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
-
 		req := &tgx.SendPhotoRequest{
-			Photo: ctx.Photo[0].FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{
-				ChatId: partner.ChatId,
-			},
+			Photo:            ctx.Photo[0].FileId,
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
 		}
 		return bot.SendPhoto(req)
 	})
 
 	bot.OnMessage("Voice", func(ctx *tgx.Context) error {
-
-		partner, errMsg := CheckAndGetPartner(ctx.ChatID, userStore)
+		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
-
 		req := &tgx.SendVoiceRequest{
-			Voice: ctx.Voice.FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{
-				ChatId: partner.ChatId,
-			},
+			Voice:            ctx.Voice.FileId,
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
 		}
 		return bot.SendVoice(req)
 	})
 
 	bot.OnMessage("Document", func(ctx *tgx.Context) error {
-
-		partner, errMsg := CheckAndGetPartner(ctx.ChatID, userStore)
+		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
-
 		req := &tgx.SendDocumentRequest{
-			Document: ctx.Document.FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{
-				ChatId: partner.ChatId,
-			},
+			Document:         ctx.Document.FileId,
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
 		}
-
 		return bot.SendDocument(req)
 	})
 
 	bot.OnMessage("Video", func(ctx *tgx.Context) error {
-
-		partner, errMsg := CheckAndGetPartner(ctx.ChatID, userStore)
+		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
-
 		req := &tgx.SendVideoRequest{
-			Video: ctx.Video.FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{
-				ChatId: partner.ChatId,
-			},
+			Video:            ctx.Video.FileId,
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
 		}
-
 		return bot.SendVideo(req)
 	})
 
 	bot.OnMessage("Sticker", func(ctx *tgx.Context) error {
-
-		partner, errMsg := CheckAndGetPartner(ctx.ChatID, userStore)
+		partnerUser, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
 			return ctx.Reply(errMsg)
 		}
-
 		req := &tgx.SendStickerRequest{
-			Sticker: ctx.Sticker.FileId,
-			BaseMediaRequest: tgx.BaseMediaRequest{
-				ChatId: partner.ChatId,
-			},
+			Sticker:          ctx.Sticker.FileId,
+			BaseMediaRequest: tgx.BaseMediaRequest{ChatId: partnerUser.ChatId},
 		}
-
 		return bot.SendSticker(req)
 	})
 
-	if err := bot.SetWebhook(); err != nil {
-		log.Fatal("Failed to set webhook:", err)
-	}
+	log.Println("--- BOT INITIALIZED SUCCESSFULLY ---")
+}
 
-	logger.Info("Starting server on :8080")
-	http.HandleFunc("/webhook", bot.HandleWebhook)
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatal("Server error:", err)
+func HandleRequest(ctx context.Context, req events.APIGatewayProxyRequest) (events.APIGatewayProxyResponse, error) {
+	log.Printf("Handler invoked! Request Body: %s", req.Body)
+	httpRequest, err := http.NewRequest("POST", "/", strings.NewReader(req.Body))
+	if err != nil {
+		log.Printf("ERROR: Could not create new HTTP request: %v", err)
+		return events.APIGatewayProxyResponse{StatusCode: 500}, err
 	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	responseRecorder := httptest.NewRecorder()
+	bot.HandleWebhook(responseRecorder, httpRequest)
+	return events.APIGatewayProxyResponse{StatusCode: responseRecorder.Code, Body: responseRecorder.Body.String()}, nil
+}
+
+func main() {
+	lambda.Start(HandleRequest)
 }
 
 func HandleConnect(b *tgx.Bot, chatId int64) error {
-	user, exists := userStore.GetUser(chatId)
+	log.Printf("LOG: HandleConnect called for ChatID: %d", chatId)
+	ctx := context.Background()
 
-	if !exists {
-		user = &store.User{ChatId: chatId, IsConnecting: true}
-		userStore.AddUser(user)
+	user, err := userStore.GetUser(ctx, chatId)
+	if err != nil {
+		log.Printf("LOG: User %d not found in DB, creating new user object.", chatId)
+		user = &store.User{ChatId: chatId}
 	}
 
 	if user.IsConnected {
+		log.Printf("LOG: User %d is already connected. Aborting connect.", chatId)
 		return b.SendMessage(chatId, MessageAlreadyConnected)
 	}
 
-	waitingQueue.RemoveNode(chatId)
-
-	partnerChatId, err := waitingQueue.Dequeue()
-
-	if err == nil {
-		partner, exists := userStore.GetUser(partnerChatId)
-
-		if exists {
-			user.IsConnected = true
-			user.IsConnecting = false
-			user.Partner = partner.ChatId
-
-			partner.IsConnected = true
-			partner.IsConnecting = false
-			partner.Partner = user.ChatId
-
-			if err := b.SendMessage(chatId, MessageConnected); err != nil {
-				return err
-			}
-			return b.SendMessage(partner.ChatId, MessageConnected)
-		}
-
+	partner, err := userStore.FindAndConnectPartner(ctx, user)
+	if err != nil {
+		log.Printf("ERROR: FindAndConnectPartner failed for %d: %v", chatId, err)
+		return b.SendMessage(chatId, MessageErrSomethingWentWrong)
 	}
 
-	waitingQueue.Enqueue(chatId)
+	if partner != nil {
+		log.Printf("LOG: Match found! %d is now connected with %d.", user.ChatId, partner.ChatId)
+		b.SendMessage(user.ChatId, MessageConnected)
+		b.SendMessage(partner.ChatId, MessageConnected)
+		return nil // Success!
+	}
+
+	log.Printf("LOG: No partner found for %d. Attempting to put user in queue.", chatId)
 	user.IsConnecting = true
+	if err := userStore.UpdateUser(ctx, user); err != nil {
+		log.Printf("ERROR: Failed to put user %d into queue: %v", chatId, err)
+		return b.SendMessage(chatId, MessageErrSomethingWentWrong)
+	}
+
+	log.Printf("LOG: Successfully put user %d in queue.", chatId)
 	return b.SendMessage(chatId, MessageLookingForPartner)
 }
 
 func HandleStop(b *tgx.Bot, chatId int64) error {
-	user, exists := userStore.GetUser(chatId)
+	log.Printf("LOG: HandleStop called for ChatID: %d", chatId)
+	ctx := context.Background()
 
-	if !exists || (!user.IsConnected && !user.IsConnecting) {
+	user, err := userStore.GetUser(ctx, chatId)
+	if err != nil || (!user.IsConnected && !user.IsConnecting) {
+		log.Printf("LOG: User %d tried to stop but was not in a chat or queue.", chatId)
 		return b.SendMessage(chatId, MessageConnectWithSomeoneFirst)
 	}
 
-	if user.IsConnecting {
-		if err := waitingQueue.RemoveNode(chatId); err != nil {
-			return b.SendMessage(chatId, "Error removing you from the queue. Please try again.")
-		}
-		user.IsConnecting = false
-		return b.SendMessage(chatId, "You have been removed from the connection queue.")
-	}
-
 	if user.IsConnected {
-		partner, partnerExists := userStore.GetUser(user.Partner)
-		if partnerExists {
+		log.Printf("LOG: User %d is disconnecting from partner %d.", chatId, user.Partner)
+		partner, err := userStore.GetUser(ctx, user.Partner)
+		if err == nil {
 			partner.IsConnected = false
 			partner.Partner = 0
-
-			if err := b.SendMessage(partner.ChatId, MessagePartnerLeftChat); err != nil {
-				return err
-			}
+			userStore.UpdateUser(ctx, partner)
+			b.SendMessage(partner.ChatId, MessagePartnerLeftChat)
+		} else {
+			log.Printf("WARN: Could not find partner %d to notify about disconnection for user %d.", user.Partner, chatId)
 		}
-
-		user.IsConnected = false
-		user.IsConnecting = false
-		user.Partner = 0
-
-		return b.SendMessage(chatId, MessageChatEnded)
 	}
 
-	// fallback (should not reach here)
-	return b.SendMessage(chatId, MessageConnectWithSomeoneFirst)
+	log.Printf("LOG: Resetting status for user %d.", chatId)
+	user.IsConnected = false
+	user.IsConnecting = false
+	user.Partner = 0
+	if err := userStore.UpdateUser(ctx, user); err != nil {
+		log.Printf("ERROR: Failed to update user %d on stop: %v", chatId, err)
+		return b.SendMessage(chatId, MessageErrSomethingWentWrong)
+	}
+
+	return b.SendMessage(chatId, MessageChatEnded)
+}
+
+func HandleNext(b *tgx.Bot, chatId int64) error {
+	log.Printf("LOG: HandleNext called for ChatID: %d", chatId)
+	HandleStop(b, chatId)
+	return HandleConnect(b, chatId)
 }
 
 func HandleStatus(b *tgx.Bot, chatId int64) error {
-	user, exists := userStore.GetUser(chatId)
-	if !exists {
+	log.Printf("LOG: HandleStatus called for ChatID: %d", chatId)
+	user, err := userStore.GetUser(context.Background(), chatId)
+	if err != nil {
 		return b.SendMessage(chatId, MessageNotConnectedStatus)
 	}
-
 	if user.IsConnected {
 		return b.SendMessage(chatId, MessageCurrentlyChatting)
 	}
-
 	if user.IsConnecting {
 		return b.SendMessage(chatId, MessageInWaitingList)
 	}
-
 	return b.SendMessage(chatId, MessageNotConnectedStatus)
 }
 
-func CheckAndGetPartner(chatId int64, userStore *store.UserStore) (*store.User, string) {
-	user, exists := userStore.GetUser(chatId)
-	if !exists || !user.IsConnected {
+func CheckAndGetPartner(chatId int64) (*store.User, string) {
+	log.Printf("LOG: Checking for partner for ChatID %d", chatId)
+
+	user, err := userStore.GetUser(context.Background(), chatId)
+	if err != nil {
+		log.Printf("WARN: User %d not found in DB for partner check.", chatId)
+		return nil, MessageNotConnected
+	}
+	if !user.IsConnected || user.Partner == 0 {
+		log.Printf("LOG: User %d is not currently connected to a partner.", chatId)
 		return nil, MessageNotConnected
 	}
 
-	partner, exists := userStore.GetUser(user.Partner)
-	if !exists {
+	partnerUser, err := userStore.GetUser(context.Background(), user.Partner)
+	if err != nil {
+		log.Printf("ERROR: Could not find partner %d in DB for user %d. State may be inconsistent.", user.Partner, chatId)
+		user.IsConnected = false
+		user.Partner = 0
+		userStore.UpdateUser(context.Background(), user)
 		return nil, MessagePartnerNotAvailable
 	}
-	return partner, ""
+
+	log.Printf("LOG: Found partner %d for user %d.", partnerUser.ChatId, chatId)
+	return partnerUser, ""
+}
+
+func HandleInterests(b *tgx.Bot, chatId int64) error {
+	var interests_button = [][]models.InlineKeyboardButton{
+		{
+			{Text: "Music", CallbackData: "interest_music"},
+			{Text: "Movies", CallbackData: "interest_movies"},
+			{Text: "Sports", CallbackData: "interest_sports"},
+		},
+		{
+			{Text: "Gaming", CallbackData: "interest_gaming"},
+			{Text: "Books", CallbackData: "interest_books"},
+			{Text: "Travel", CallbackData: "interest_travel"},
+		},
+		{
+			{Text: "Food", CallbackData: "interest_food"},
+			{Text: "Art", CallbackData: "interest_art"},
+			{Text: "Technology", CallbackData: "interest_tech"},
+		},
+		{
+			{Text: "Animals", CallbackData: "interest_animals"},
+			{Text: "Adult", CallbackData: "interest_adult"},
+		},
+	}
+	req := &tgx.SendMessageRequest{
+		ChatId:      chatId,
+		Text:        "Set Interests",
+		ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: interests_button},
+	}
+	return b.SendMessageWithOpts(req)
 }

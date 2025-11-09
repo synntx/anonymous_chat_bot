@@ -1,45 +1,158 @@
 package store
 
-import "sync"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+
+	"github.com/aws/aws-sdk-go-v2/aws" // <--- THIS LINE HAS BEEN CORRECTED
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+)
 
 type User struct {
-	ChatId       int64
-	IsConnecting bool
-	IsConnected  bool
-	Partner      int64
+	ChatId       int64 `dynamodbav:"ChatId"`
+	IsConnecting bool  `dynamodbav:"IsConnecting"`
+	IsConnected  bool  `dynamodbav:"IsConnected"`
+	Partner      int64 `dynamodbav:"Partner,omitempty"`
 }
 
-type UserStore struct {
-	Mu    sync.Mutex
-	Users map[int64]*User
+type DynamoDBStore struct {
+	Client    *dynamodb.Client
+	TableName string
 }
 
-func (u *UserStore) AddUser(user *User) {
-	u.Mu.Lock()
-	defer u.Mu.Unlock()
-	u.Users[user.ChatId] = user
-}
-
-func (u *UserStore) RemoveUser(chatId int64) {
-	u.Mu.Lock()
-	defer u.Mu.Unlock()
-	delete(u.Users, chatId)
-}
-
-func (u *UserStore) GetUser(chatId int64) (*User, bool) {
-	u.Mu.Lock()
-	defer u.Mu.Unlock()
-	user, exists := u.Users[chatId]
-	return user, exists
-}
-
-func (u *UserStore) FindMatch(excludeChatId int64) (*User, bool) {
-	u.Mu.Lock()
-	defer u.Mu.Unlock()
-	for _, user := range u.Users {
-		if user.IsConnecting && user.ChatId != excludeChatId {
-			return user, true
+func New(ctx context.Context, tableName string) (*DynamoDBStore, error) {
+	customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+		if os.Getenv("AWS_SAM_LOCAL") == "true" {
+			return aws.Endpoint{
+				PartitionID:   "aws",
+				URL:           "http://host.docker.internal:8000",
+				SigningRegion: "us-east-1",
+			}, nil
 		}
+		return aws.Endpoint{}, &aws.EndpointNotFoundError{}
+	})
+
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithEndpointResolverWithOptions(customResolver))
+	if err != nil {
+		return nil, fmt.Errorf("unable to load AWS SDK config: %w", err)
 	}
-	return nil, false
+
+	client := dynamodb.NewFromConfig(cfg)
+	return &DynamoDBStore{Client: client, TableName: tableName}, nil
+}
+
+func (s *DynamoDBStore) GetUser(ctx context.Context, chatId int64) (*User, error) {
+	key, err := attributevalue.Marshal(chatId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal key: %w", err)
+	}
+
+	input := &dynamodb.GetItemInput{
+		TableName: aws.String(s.TableName),
+		Key:       map[string]types.AttributeValue{"ChatId": key},
+	}
+
+	result, err := s.Client.GetItem(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get item from DynamoDB: %w", err)
+	}
+	if result.Item == nil {
+		return nil, errors.New("user not found")
+	}
+
+	var user User
+	err = attributevalue.UnmarshalMap(result.Item, &user)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal DynamoDB item: %w", err)
+	}
+	return &user, nil
+}
+
+func (s *DynamoDBStore) UpdateUser(ctx context.Context, user *User) error {
+	item, err := attributevalue.MarshalMap(user)
+	if err != nil {
+		return fmt.Errorf("failed to marshal user into DynamoDB item: %w", err)
+	}
+	input := &dynamodb.PutItemInput{
+		TableName: aws.String(s.TableName),
+		Item:      item,
+	}
+	_, err = s.Client.PutItem(ctx, input)
+	if err != nil {
+		return fmt.Errorf("failed to put item to DynamoDB: %w", err)
+	}
+	return nil
+}
+
+func (s *DynamoDBStore) FindAndConnectPartner(ctx context.Context, me *User) (*User, error) {
+	input := &dynamodb.ScanInput{
+		TableName:        aws.String(s.TableName),
+		FilterExpression: aws.String("IsConnecting = :connecting AND ChatId <> :myChatId"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":connecting": &types.AttributeValueMemberBOOL{Value: true},
+			":myChatId":   &types.AttributeValueMemberN{Value: fmt.Sprintf("%d", me.ChatId)},
+		},
+		Limit: aws.Int32(1),
+	}
+
+	result, err := s.Client.Scan(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan for partners: %w", err)
+	}
+
+	if len(result.Items) == 0 {
+		return nil, nil
+	}
+
+	var partner User
+	if err := attributevalue.UnmarshalMap(result.Items[0], &partner); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal partner item: %w", err)
+	}
+
+	me.IsConnected = true
+	me.IsConnecting = false
+	me.Partner = partner.ChatId
+
+	partner.IsConnected = true
+	partner.IsConnecting = false
+	partner.Partner = me.ChatId
+
+	mePut, err := s.createPut(me)
+	if err != nil {
+		return nil, err
+	}
+	partnerPut, err := s.createPut(&partner)
+	if err != nil {
+		return nil, err
+	}
+
+	txInput := &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			{Put: mePut},
+			{Put: partnerPut},
+		},
+	}
+
+	_, err = s.Client.TransactWriteItems(ctx, txInput)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute connect transaction: %w", err)
+	}
+
+	return &partner, nil
+}
+
+func (s *DynamoDBStore) createPut(user *User) (*types.Put, error) {
+	item, err := attributevalue.MarshalMap(user)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal user for transaction: %w", err)
+	}
+	return &types.Put{
+		TableName: aws.String(s.TableName),
+		Item:      item,
+	}, nil
 }

@@ -1,0 +1,33 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Anonymous Chat Telegram Bot
+
+Resources:
+  AnonymousChatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Zip
+      CodeUri: .
+      Handler: main
+      Runtime: go1.x
+      Timeout: 10
+      Architectures:
+        - x86_64
+      Events:
+        Webhook:
+          Type: Api
+          Properties:
+            Path: /
+            Method: post
+            Auth:
+              Authorizer: NONE # Explicitly disable the authorizer
+      Environment:
+        Variables:
+          BOT_TOKEN: YOUR_BOT_TOKEN
+          DYNAMODB_TABLE: AnonymousChatUsers
+
+Outputs:
+  WebhookApi:
+    Description: "API Gateway endpoint URL for Prod stage"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
