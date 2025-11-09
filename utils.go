@@ -44,6 +44,9 @@ Feel free to reach out anytime via @harsh_693.`
 	MessagePartnerGenderSet     = "Your preferred partner gender has been set to: %s."
 	MessageInvalidGender        = "Invalid gender. Please use one of: male, female, other."
 	MessageInvalidPartnerGender = "Invalid preference. Please use one of: male, female, any."
+
+	CallbackGenderPrefix        = "gender_"
+	CallbackPartnerGenderPrefix = "pgender_"
 )
 
 var Commands = []tgx.BotCommand{
@@ -87,5 +90,21 @@ var inlineKeyboardButton = [][]models.InlineKeyboardButton{
 			Text:         "Check Status",
 			CallbackData: "status",
 		},
+	},
+}
+
+var inlineKeyboardGender = [][]models.InlineKeyboardButton{
+	{
+		{Text: "Male", CallbackData: CallbackGenderPrefix + "male"},
+		{Text: "Female", CallbackData: CallbackGenderPrefix + "female"},
+		{Text: "Other", CallbackData: CallbackGenderPrefix + "other"},
+	},
+}
+
+var inlineKeyboardPartnerGender = [][]models.InlineKeyboardButton{
+	{
+		{Text: "Male", CallbackData: CallbackPartnerGenderPrefix + "male"},
+		{Text: "Female", CallbackData: CallbackPartnerGenderPrefix + "female"},
+		{Text: "Any", CallbackData: CallbackPartnerGenderPrefix + "any"},
 	},
 }

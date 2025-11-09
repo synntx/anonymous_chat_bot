@@ -156,6 +156,56 @@ func init() {
 		return ctx.AnswerCallback(&tgx.CallbackAnswerOptions{})
 	})
 
+	bot.OnCallback(CallbackGenderPrefix, func(ctx *tgx.CallbackContext) error {
+		gender := strings.TrimPrefix(ctx.Data, CallbackGenderPrefix)
+		chatId := ctx.GetChatID()
+
+		user, err := GetUser(context.Background(), chatId)
+		if err != nil {
+			user = &store.User{ChatId: chatId}
+		}
+
+		user.Gender = gender
+		if err := UpdateUser(context.Background(), user); err != nil {
+			log.Printf("ERROR: Failed to update user %d gender from callback: %v", chatId, err)
+			return ctx.AnswerCallback(&tgx.CallbackAnswerOptions{Text: MessageErrSomethingWentWrong, ShowAlert: true})
+		}
+
+		// Edit the message to remove the keyboard and show confirmation
+		editedText := fmt.Sprintf(MessageGenderSet, gender)
+		err = ctx.EditMessage(editedText, &tgx.EditMessageOptions{ReplyMarkup: nil})
+		if err != nil {
+			log.Printf("ERROR: Failed to edit message text for user %d: %v", chatId, err)
+		}
+
+		return ctx.AnswerCallback(&tgx.CallbackAnswerOptions{Text: editedText, ShowAlert: false}) // Show as toast
+	})
+
+	bot.OnCallback(CallbackPartnerGenderPrefix, func(ctx *tgx.CallbackContext) error {
+		gender := strings.TrimPrefix(ctx.Data, CallbackPartnerGenderPrefix)
+		chatId := ctx.GetChatID()
+
+		user, err := GetUser(context.Background(), chatId)
+		if err != nil {
+			user = &store.User{ChatId: chatId}
+		}
+
+		user.PartnerGender = gender
+		if err := UpdateUser(context.Background(), user); err != nil {
+			log.Printf("ERROR: Failed to update user %d partner gender from callback: %v", chatId, err)
+			return ctx.AnswerCallback(&tgx.CallbackAnswerOptions{Text: MessageErrSomethingWentWrong, ShowAlert: true})
+		}
+
+		// Edit the message to remove the keyboard and show confirmation
+		editedText := fmt.Sprintf(MessagePartnerGenderSet, gender)
+		err = ctx.EditMessage(editedText, &tgx.EditMessageOptions{ReplyMarkup: nil})
+		if err != nil {
+			log.Printf("ERROR: Failed to edit message text for user %d: %v", chatId, err)
+		}
+
+		return ctx.AnswerCallback(&tgx.CallbackAnswerOptions{Text: editedText, ShowAlert: false}) // Show as toast
+	})
+
 	bot.OnMessage("Text", func(ctx *tgx.Context) error {
 		partnerChatId, errMsg := CheckAndGetPartner(ctx.ChatID)
 		if errMsg != "" {
@@ -415,7 +465,13 @@ func HandleReport(b *tgx.Bot, chatId int64) error {
 func HandleMyGender(ctx *tgx.Context) error {
 	args := ctx.Args
 	if len(args) == 0 {
-		return ctx.Reply("Please provide your gender. Usage: /mygender [male/female/other]")
+		// Send inline keyboard for gender selection
+		req := &tgx.SendMessageRequest{
+			ChatId:      ctx.ChatID,
+			Text:        "Please select your gender:",
+			ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: inlineKeyboardGender},
+		}
+		return bot.SendMessageWithOpts(req)
 	}
 	gender := strings.ToLower(args[0])
 	if gender != "male" && gender != "female" && gender != "other" {
@@ -438,7 +494,13 @@ func HandleMyGender(ctx *tgx.Context) error {
 func HandlePartnerGender(ctx *tgx.Context) error {
 	args := ctx.Args
 	if len(args) == 0 {
-		return ctx.Reply("Please provide your preferred partner gender. Usage: /partnergender [male/female/any]")
+		// Send inline keyboard for partner gender selection
+		req := &tgx.SendMessageRequest{
+			ChatId:      ctx.ChatID,
+			Text:        "Please select your preferred partner gender:",
+			ReplyMarkup: models.InlineKeyboardMarkup{InlineKeyboard: inlineKeyboardPartnerGender},
+		}
+		return bot.SendMessageWithOpts(req)
 	}
 	gender := strings.ToLower(args[0])
 	if gender != "male" && gender != "female" && gender != "any" {
